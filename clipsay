@@ -1,0 +1,284 @@
+#!/usr/bin/env python3
+
+import sys
+import boto3
+import mpv
+import re
+from PyQt5.Qt import QApplication, QClipboard
+from PyQt5 import QtCore, QtWidgets
+from PyQt5.QtWidgets import *
+from PyQt5.QtCore import QSize
+
+import locale
+
+
+class TextToSpeech:
+    def __init__(self):
+        self.voice = 'Joanna'
+        self.output_format = 'mp3'
+
+        self.polly_client = boto3.client('polly')
+
+    def synthesize(self, text, mp3_file='/tmp/clipsay-synth.mp3'):
+        response = self.polly_client.synthesize_speech(VoiceId=self.voice,
+                OutputFormat=self.output_format,
+                Text = text)
+
+        file = open(mp3_file, 'wb')
+        file.write(response['AudioStream'].read())
+        file.close()
+
+        return mp3_file
+
+class Player:
+    def __init__(self):
+        locale.setlocale(locale.LC_NUMERIC, "C");
+        self.player = mpv.MPV()
+
+        self.speed = 1.0
+        self.boost_speed = 2.0
+
+    def play(self, content):
+        self.resume()
+        self.stop()
+        self.player.play(content)
+        self.player.wait_until_playing()
+
+        self.player.speed = self.speed
+
+    def pause(self):
+        self.player.pause = True
+
+    def resume(self):
+        self.player.pause = False
+
+    def stop(self):
+        self.player.stop()
+
+    def boost(self, boost_bool):
+        if boost_bool == True:
+            self.player.speed = self.boost_speed
+        else:
+            self.player.speed = self.speed
+
+    def updateSpeed(self):
+        self.player.speed = self.speed
+
+    def setSpeed(self, speed):
+        self.speed = speed
+        self.updateSpeed()
+
+    def setBoostSpeed(self, boost_speed):
+        self.boost_speed = boost_speed
+
+class ClipSayWindow(QMainWindow):
+    def __init__(self):
+        QMainWindow.__init__(self)
+
+        # GUI setup
+        self.setMinimumSize(QSize(440, 240))
+        self.setWindowTitle("ClipSay")
+
+        self.clipsay_widget = ClipSayMainWidget()
+        self.setCentralWidget(self.clipsay_widget)
+
+class ClipSayMainWidget(QWidget):
+    def __init__(self):
+        QWidget.__init__(self)
+
+        # TTS engine
+        self.tts = TextToSpeech()
+
+        # Audio player
+        self.player = Player()
+
+        # Variables
+        self.enabled = True
+        self.statusLabelDefault = 'Waiting for text to be copied'
+        self.excludeTextDefault = r'\[.[^\]]*\]'
+
+        # Layout
+        #self.statusLabel = QLabel('Waiting for input')
+        #self.statusLabel.setFont.setStyleSheet("font-weight: bold")
+
+        self.enableButton = QPushButton('Disable')
+        self.statusLabel = QLabel(self.statusLabelDefault)
+
+        self.playButton = QPushButton('Play')
+        self.pauseButton = QPushButton('Pause')
+        self.stopButton = QPushButton('Stop')
+        self.boostButton = QPushButton('Boost')
+
+        self.excludeLabel = QLabel('Exclude regex:')
+        self.excludeTextBox = QLineEdit(self.excludeTextDefault)
+
+        self.clipTextBox = QPlainTextEdit(self)
+        self.clipTextBox.setReadOnly(True)
+
+        #self.speedLabel = QLabel('speed:')
+        self.speedSpinBox = QDoubleSpinBox()
+        self.speedSpinBox.setPrefix('speed: ')
+        self.speedSpinBox.setSuffix('x')
+        self.speedSpinBox.setValue(1)
+        self.speedSpinBox.setDecimals(1)
+        self.speedSpinBox.setRange(0.1, 3.0)
+        self.speedSpinBox.setSingleStep(0.1)
+        self.speedSpinBox.setValue(self.player.speed)
+
+        #self.boostLabel = QLabel('boost:')
+        self.boostSpinBox = QDoubleSpinBox()
+        self.boostSpinBox.setPrefix('boost: ')
+        self.boostSpinBox.setSuffix('x')
+        self.boostSpinBox.setDecimals(1)
+        self.boostSpinBox.setRange(0.1, 3.0)
+        self.boostSpinBox.setSingleStep(0.1)
+        self.boostSpinBox.setValue(self.player.boost_speed)
+
+        vbox = QVBoxLayout()
+        vbox.addStretch(1)
+
+        hbox_top = QHBoxLayout()
+        hbox_top.addWidget(self.enableButton)
+        hbox_top.addWidget(self.statusLabel)
+
+        hbox_exclude = QHBoxLayout()
+        hbox_exclude.addWidget(self.excludeLabel)
+        hbox_exclude.addWidget(self.excludeTextBox)
+
+        vbox.addLayout(hbox_top)
+        vbox.addWidget(self.clipTextBox)
+        vbox.addLayout(hbox_exclude)
+
+        hbox = QHBoxLayout()
+
+        vbox_n0 = QVBoxLayout()
+        vbox_n0.addWidget(self.playButton)
+        vbox_n0.addWidget(self.pauseButton)
+
+        vbox_n1 = QVBoxLayout()
+        vbox_n1.addWidget(self.boostButton)
+        vbox_n1.addWidget(self.stopButton)
+
+        #vbox_n2 = QVBoxLayout()
+        #vbox_n2.addWidget(self.speedLabel)
+        #vbox_n2.addWidget(self.boostLabel)
+
+        vbox_n3 = QVBoxLayout()
+        vbox_n3.addWidget(self.speedSpinBox)
+        vbox_n3.addWidget(self.boostSpinBox)
+
+        hbox.addLayout(vbox_n0)
+        hbox.addLayout(vbox_n1)
+        #hbox.addLayout(vbox_n2)
+        hbox.addLayout(vbox_n3)
+
+        vbox.addLayout(hbox)
+
+        self.setLayout(vbox)
+
+        # Actions
+        QApplication.clipboard().dataChanged.connect(self.clipboardChanged)
+
+        self.enableButton.pressed.connect(self.enableButtonPressed)
+
+        self.playButton.pressed.connect(self.playButtonPressed)
+        self.pauseButton.pressed.connect(self.pauseButtonPressed)
+        self.stopButton.pressed.connect(self.stopButtonPressed)
+        self.boostButton.pressed.connect(self.boostButtonPressed)
+        self.boostButton.released.connect(self.boostButtonReleased)
+
+        self.speedSpinBox.valueChanged.connect(self.speedSpinBoxChanged)
+        self.boostSpinBox.valueChanged.connect(self.boostSpinBoxChanged)
+
+        self.enableElements(self.enabled)
+
+        # MPV connections
+        @self.player.player.property_observer('time-remaining')
+        def time_observer(_name, value):
+            if value == None:
+                self.statusLabel.setText(self.statusLabelDefault)
+            else:
+                self.statusLabel.setText("Time remaining: {:.1f}s".format(value))
+
+
+    def clipboardChanged(self):
+        if self.enabled == False:
+            return
+
+        text = QApplication.clipboard().text()
+        text = self.cleanText(text)
+
+        #print(text)
+        self.clipTextBox.clear()
+        self.clipTextBox.insertPlainText(text + '\n')
+
+        # Synthesize the text
+        mp3 = self.tts.synthesize(text)
+
+        # Play the mp3 file
+        self.player.play(mp3)
+
+    def cleanText(self, text):
+        regex = self.excludeTextBox.text()
+        if regex == '':
+            return text
+        cleaned_text = re.sub(regex, '', text)
+
+        return cleaned_text
+
+
+    def enableButtonPressed(self):
+        if self.enabled == True:
+            self.enabled = False
+            self.enableButton.setText('Enable')
+            # Make some stuff grey to make it more obvious
+            self.clipTextBox.clear()
+            self.player.stop()
+        else:
+            self.enableButton.setText('Disable')
+            self.enabled = True
+
+        self.enableElements(self.enabled)
+
+    def enableElements(self, bool_enable):
+            self.playButton.setEnabled(bool_enable)
+            self.pauseButton.setEnabled(bool_enable)
+            self.stopButton.setEnabled(bool_enable)
+            self.boostButton.setEnabled(bool_enable)
+            self.speedSpinBox.setEnabled(bool_enable)
+            self.boostSpinBox.setEnabled(bool_enable)
+
+    def playButtonPressed(self):
+        #print('Pressed play')
+        self.player.resume()
+
+    def pauseButtonPressed(self):
+        #print('Pressed pause')
+        self.player.pause()
+
+    def stopButtonPressed(self):
+        #print('Pressed stop')
+        self.player.stop()
+        self.clipTextBox.clear()
+
+    def boostButtonPressed(self):
+        #print('Pressed boost')
+        self.player.boost(True)
+
+    def boostButtonReleased(self):
+        #print('Released boost')
+        self.player.boost(False)
+
+    def speedSpinBoxChanged(self):
+        newspeed = self.speedSpinBox.value()
+        self.player.setSpeed(newspeed)
+
+    def boostSpinBoxChanged(self):
+        newspeed = self.boostSpinBox.value()
+        self.player.setBoostSpeed(newspeed)
+
+
+app = QtWidgets.QApplication(sys.argv)
+mainWin = ClipSayWindow()
+mainWin.show()
+sys.exit(app.exec_())
